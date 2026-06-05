@@ -31,17 +31,45 @@ TILES = 3
 class Renderer:
     def __init__(self, rp: RenderParams, grid_n: int):
         self.rp = rp
+        # Prefer X11/XWayland over native Wayland. raylib 6.1-dev's Wayland
+        # HiDPI path renders into a partial viewport (3/4 of the window black)
+        # and mis-maps the mouse; under X11 render==screen with a sane scale and
+        # everything lines up. This hint must precede init_window (it configures
+        # the glfwInit that InitWindow performs). Set OCEAN_FORCE_WAYLAND=1 to
+        # keep native Wayland.
+        if os.environ.get("OCEAN_FORCE_WAYLAND") != "1":
+            try:
+                rl.glfw_init_hint(rl.GLFW_PLATFORM, rl.GLFW_PLATFORM_X11)
+            except Exception:
+                pass  # non-GLFW/headless builds: ignore
+        # NOTE: FLAG_WINDOW_HIGHDPI is deliberately NOT set. On this raylib
+        # (6.1-dev) + Wayland build it produces a 2x framebuffer but only draws
+        # into a logical-sized viewport at the corner (3/4 of the window stays
+        # black) and the fix (forcing rlViewport) doesn't stick. Without it,
+        # raylib renders at logical resolution (the compositor upscales) and
+        # drawing + mouse share one coordinate space, which actually works.
         rl.set_config_flags(rl.FLAG_MSAA_4X_HINT | rl.FLAG_WINDOW_RESIZABLE)
         rl.init_window(rp.width, rp.height, b"FFT Ocean -- NumPy vs CuPy")
 
-        # The window may be tiny relative to a HiDPI monitor, so grow it to most
-        # of the monitor. The GUI is scaled per-frame from the *actual*
-        # framebuffer size (see App._draw_gui), which keeps widgets and the
-        # mouse in one coordinate space regardless of Wayland's content scaling.
+        # The window may open tiny relative to a HiDPI monitor. maximize_window
+        # is honoured by Wayland (unlike set_window_position / reliable resize).
+        # The GUI is scaled per-frame from the *actual* framebuffer size (see
+        # App._draw_gui), keeping widgets and the mouse in one coordinate space
+        # regardless of how big the compositor makes the window.
         mon = rl.get_current_monitor()
         mw, mh = rl.get_monitor_width(mon), rl.get_monitor_height(mon)
         rl.set_window_size(int(mw * 0.85), int(mh * 0.85))
-        rl.set_window_position(int(mw * 0.07), int(mh * 0.06))
+        rl.maximize_window()
+        # Pump a few frames so the compositor settles the resize, then report
+        # the coordinate spaces (helps diagnose HiDPI/Wayland mismatches).
+        for _ in range(8):
+            rl.begin_drawing()
+            rl.end_drawing()
+        sc = rl.get_window_scale_dpi()
+        print(f"[DIAG] monitor={mw}x{mh}  screen={rl.get_screen_width()}x"
+              f"{rl.get_screen_height()}  render={rl.get_render_width()}x"
+              f"{rl.get_render_height()}  scale_dpi={sc.x:.2f}x{sc.y:.2f}",
+              flush=True)
         # Push the far clip plane out so a zoomed-out ocean is never clipped
         # (raylib's default far plane is only 1000).
         rl.rl_set_clip_planes(0.05, 12000.0)

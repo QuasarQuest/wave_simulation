@@ -33,8 +33,20 @@ whitecaps) and an orbit camera, plus a `raygui` control panel.
 
 The GPU advantage grows with grid size (cuFFT scales far better than NumPy's
 pocketfft). At 1024²+, the on-screen frame rate is limited not by the simulation
-but by the **GPU→CPU→GPU texture transfer** (there is no CUDA–OpenGL interop yet),
-which is itself a nice illustration of where the real cost moves.
+but by the **GPU→CPU→GPU texture transfer**, which is itself a nice illustration
+of where the real cost moves.
+
+### Why not CUDA–OpenGL interop?
+
+On this **hybrid (Optimus) laptop** the Wayland compositor hands the OpenGL
+context to the **Intel iGPU**, while CuPy runs on the **NVIDIA GTX 1650 Ti** — so
+each frame's height field crosses GPUs via the CPU. CUDA–GL interop (writing the
+field straight into the GL buffer) would require forcing GL onto the NVIDIA GPU
+(`--nvidia-gl`, PRIME render-offload). But then the *single* GTX 1650 Ti must do
+both the FFT compute **and** the rendering, and they contend: measured 1024²
+dropped from ~37 to ~33 FPS and the sim step doubled. So interop is the wrong
+tool on this hardware — the "free" Intel GPU for rendering is actually a net win
+despite the cross-GPU copy. The `--nvidia-gl` flag is kept for experimentation.
 
 ## Setup
 
@@ -60,7 +72,16 @@ a GPU) is unavailable, the app runs CPU-only and disables the GPU toggle.
 .venv/bin/python main.py --backend numpy # start on CPU
 .venv/bin/python main.py --grid 1024     # start at 1024x1024
 .venv/bin/python main.py --headless      # print the CPU-vs-GPU benchmark table
+.venv/bin/python main.py --nvidia-gl     # force GL onto the NVIDIA GPU (hybrid laptops)
 ```
+
+The window opens large and the GUI scales to the framebuffer, so it stays
+readable/clickable on HiDPI displays (where raylib otherwise opens a tiny window).
+
+**HiDPI / Wayland note:** raylib 6.1-dev's native-Wayland HiDPI path is broken
+(it renders into a partial viewport and mis-maps the mouse), so the app forces
+the **X11/XWayland** GLFW backend, where rendering fills the window and the mouse
+lines up with the controls. Set `OCEAN_FORCE_WAYLAND=1` to keep native Wayland.
 
 **Controls:** left-mouse drag = orbit, wheel = zoom. The panel adjusts wind
 speed/direction, amplitude, choppiness, time scale, vertical exaggeration, grid

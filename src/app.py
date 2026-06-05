@@ -81,16 +81,17 @@ class App:
 
     # ------------------------------------------------------------------- gui
     def _draw_gui(self) -> None:
-        # Scale the whole panel to the live framebuffer height so it stays
-        # readable/clickable at any window or HiDPI size. render==screen here,
-        # so widgets and the mouse share one coordinate space.
-        self.ui = max(1.5, min(5.0, rl.get_render_height() / 900.0))
+        # Lay out in logical SCREEN coordinates -- the space raylib draws and
+        # reports the mouse in (with HIGHDPI the framebuffer may be larger, but
+        # raylib maps screen->framebuffer for us). Scale to the screen height so
+        # the panel stays readable/clickable at any window size.
+        sh = rl.get_screen_height()
+        self.ui = max(1.0, min(3.0, sh / 900.0))
         self.panel_w = int(PANEL_W * self.ui)
         rl.gui_set_style(rl.DEFAULT, rl.TEXT_SIZE, int(17 * self.ui))
         s = self.ui
         pw = self.panel_w
-        rl.gui_panel(rl.Rectangle(0, 0, pw, rl.get_render_height()),
-                     b"FFT Ocean Controls")
+        rl.gui_panel(rl.Rectangle(0, 0, pw, sh), b"FFT Ocean Controls")
         x = 12 * s
         w = pw - 24 * s
         y = 44 * s

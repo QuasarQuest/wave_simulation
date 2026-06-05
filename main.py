@@ -1,3 +1,4 @@
+
 """FFT Ocean simulation -- NumPy (CPU) vs CuPy (GPU) benchmark with a 3D GUI.
 
 Implements the height-field ocean from doc/coursenotes2004.pdf (Tessendorf,
@@ -11,6 +12,7 @@ Run:  .venv/bin/python main.py [--backend numpy|cupy] [--grid N] [--headless]
 from __future__ import annotations
 
 import argparse
+import os
 
 from config import AppConfig, GRID_SIZES
 
@@ -23,7 +25,16 @@ def main() -> None:
                     help="initial grid size NxN")
     ap.add_argument("--headless", action="store_true",
                     help="run the CPU-vs-GPU benchmark without opening a window")
+    ap.add_argument("--nvidia-gl", action="store_true",
+                    help="force the OpenGL context onto the NVIDIA GPU via PRIME "
+                         "render-offload (hybrid laptops). Same GPU as CuPy, but "
+                         "compute and rendering then contend for one GPU.")
     args = ap.parse_args()
+
+    if args.nvidia_gl:
+        # Must be set before any GL init (i.e. before importing the renderer).
+        os.environ.setdefault("__NV_PRIME_RENDER_OFFLOAD", "1")
+        os.environ.setdefault("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
 
     cfg = AppConfig()
     if args.backend:
