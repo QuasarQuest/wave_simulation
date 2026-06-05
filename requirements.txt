@@ -1,0 +1,7 @@
+# Wave simulation deps (Python 3.14, native cp314 wheels)
+numpy==2.4.6
+raylib==6.0.1.0
+# GPU backend (optional at runtime). The [ctk] extra pulls the CUDA toolkit
+# headers as wheels, needed for CuPy's NVRTC kernel JIT -- no system CUDA
+# toolkit and no sudo required. Comment this line out for a CPU-only install.
+cupy-cuda12x[ctk]==14.1.1
