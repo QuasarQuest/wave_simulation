@@ -63,8 +63,11 @@ class Ocean:
         self._kx = xp.asarray(kx, dtype=f32)
         self._kz = xp.asarray(kz, dtype=f32)
         self._kmag_safe = xp.asarray(kmag_safe, dtype=f32)
-        # Reusable host buffer for the packed (height, Dx, Dz, foam) texture.
+        # Reusable host buffers for the two GL textures uploaded each frame:
+        #   displacement = (height, Dx, Dz, 0)
+        #   slope        = (dH/dx, dH/dz, 0, 0)  -> seamless per-fragment normals
         self._packed = np.empty((N, N, 4), dtype=np.float32)
+        self._packed_n = np.zeros((N, N, 4), dtype=np.float32)
 
     def _phillips(self, kx, kz, kmag, kmag_safe) -> np.ndarray:
         p = self.params
@@ -123,6 +126,11 @@ class Ocean:
         self.dx = (lam * xp.real(disp_x)).astype(xp.float32)
         self.dz = (lam * xp.real(disp_z)).astype(xp.float32)
 
+        # Surface slopes: gradient of height = IFFT(i * k * h). Used for exact,
+        # periodic per-fragment normals (no finite-difference seams).
+        self.sx = xp.real(xp.fft.ifft2(1j * self._kx * hk)).astype(xp.float32)
+        self.sz = xp.real(xp.fft.ifft2(1j * self._kz * hk)).astype(xp.float32)
+
     def pack_texture(self) -> np.ndarray:
         """Return a contiguous host (N,N,4) float32 array packing
         (height, Dx, Dz, foam) for upload to the GL displacement texture.
@@ -134,9 +142,16 @@ class Ocean:
         self._packed[..., 0] = h
         self._packed[..., 1] = dx
         self._packed[..., 2] = dz
-        # Cheap foam proxy: steep negative curvature of height -> whitecaps.
         self._packed[..., 3] = 0.0
         return self._packed
+
+    def pack_normal(self) -> np.ndarray:
+        """Return a contiguous host (N,N,4) float32 array packing the surface
+        slopes (dH/dx, dH/dz) for the shading normal."""
+        b = self.backend
+        self._packed_n[..., 0] = b.to_cpu(self.sx)
+        self._packed_n[..., 1] = b.to_cpu(self.sz)
+        return self._packed_n
 
     # ------------------------------------------------------------- live edits
     def update_params(self, params: OceanParams) -> None:

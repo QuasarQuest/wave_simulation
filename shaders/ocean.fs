@@ -6,6 +6,7 @@ in float fragHeight;
 out vec4 finalColor;
 
 uniform sampler2D texture0;   // r=height, g=Dx, b=Dz
+uniform sampler2D texture2;   // r=dH/dx, g=dH/dz  (raylib normal-map slot)
 uniform vec3 uSunDir;
 uniform vec3 uCamPos;
 uniform vec3 uDeep;
@@ -13,22 +14,14 @@ uniform vec3 uShallow;
 uniform vec3 uSky;
 uniform vec3 uSunCol;
 uniform float uVScale;
-uniform float uGridN;      // height-texture resolution
-uniform float uWorldSize;  // world span of one patch
+uniform float uSlopeScale;
 
 void main()
 {
-    // Normal from the periodic height texture via central differences. With
-    // REPEAT wrapping this is seamless across tiled patches (no edge seams).
-    float texel = 1.0 / uGridN;
-    float hL = texture(texture0, fragUV - vec2(texel, 0.0)).r;
-    float hR = texture(texture0, fragUV + vec2(texel, 0.0)).r;
-    float hD = texture(texture0, fragUV - vec2(0.0, texel)).r;
-    float hU = texture(texture0, fragUV + vec2(0.0, texel)).r;
-    float dWorld = uWorldSize / uGridN;  // world distance between texels
-    vec3 N = normalize(vec3(-(hR - hL) * uVScale,
-                            2.0 * dWorld,
-                            -(hU - hD) * uVScale));
+    // Normal straight from the FFT slope fields. These are periodic, so the
+    // bilinear-sampled normal is continuous across tiled patches -- no seams.
+    vec2 slope = texture(texture2, fragUV).rg * uSlopeScale;
+    vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
 
     vec3 V = normalize(uCamPos - fragWorld);
     vec3 L = normalize(uSunDir);

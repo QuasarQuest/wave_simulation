@@ -22,14 +22,29 @@ from raylib import ffi
 from config import RenderParams
 
 SHADER_DIR = os.path.join(os.path.dirname(__file__), "..", "shaders")
-MAX_MESH_SUBDIV = 256  # cap render mesh density regardless of sim grid size
+# Render mesh density per patch (capped, independent of the sim grid size) and
+# how many patch copies span the visible ocean (TILES x TILES).
+SUBDIV_PER_PATCH = 150
+TILES = 3
 
 
 class Renderer:
     def __init__(self, rp: RenderParams, grid_n: int):
         self.rp = rp
-        rl.set_config_flags(rl.FLAG_MSAA_4X_HINT)
+        rl.set_config_flags(rl.FLAG_MSAA_4X_HINT | rl.FLAG_WINDOW_RESIZABLE)
         rl.init_window(rp.width, rp.height, b"FFT Ocean -- NumPy vs CuPy")
+
+        # The window may be tiny relative to a HiDPI monitor, so grow it to most
+        # of the monitor. The GUI is scaled per-frame from the *actual*
+        # framebuffer size (see App._draw_gui), which keeps widgets and the
+        # mouse in one coordinate space regardless of Wayland's content scaling.
+        mon = rl.get_current_monitor()
+        mw, mh = rl.get_monitor_width(mon), rl.get_monitor_height(mon)
+        rl.set_window_size(int(mw * 0.85), int(mh * 0.85))
+        rl.set_window_position(int(mw * 0.07), int(mh * 0.06))
+        # Push the far clip plane out so a zoomed-out ocean is never clipped
+        # (raylib's default far plane is only 1000).
+        rl.rl_set_clip_planes(0.05, 12000.0)
         rl.set_target_fps(rp.target_fps)
 
         # Ocean shader + uniform locations.
@@ -38,19 +53,18 @@ class Renderer:
         self.shader = rl.load_shader(vs, fs)
         self._loc = {
             name: rl.get_shader_location(self.shader, name)
-            for name in ("uVScale", "uHScale", "uSunDir", "uCamPos",
-                         "uDeep", "uShallow", "uSky", "uSunCol",
-                         "uGridN", "uWorldSize")
+            for name in ("uVScale", "uHScale", "uSlopeScale", "uUVRepeat",
+                         "uSunDir", "uCamPos", "uDeep", "uShallow", "uSky",
+                         "uSunCol")
         }
         self._set_static_uniforms()
 
-        # How many patch copies to tile around the centre (radius 1 -> 3x3).
-        self.tile_radius = 1
-
-        # Orbit camera state (spherical around the patch centre).
-        self.yaw = math.radians(35.0)
-        self.pitch = math.radians(24.0)
-        self.distance = rp.world_size * 1.5
+        # Orbit camera state (spherical around the patch centre). Framed so the
+        # whole TILES x TILES ocean fits in view (span = world_size * TILES).
+        self.span = rp.world_size * TILES
+        self.yaw = math.radians(30.0)
+        self.pitch = math.radians(33.0)
+        self.distance = self.span * 1.1
         self.target = rl.Vector3(0.0, 0.0, 0.0)
         self.camera = rl.Camera3D(
             rl.Vector3(0, 50, 100), self.target, rl.Vector3(0, 1, 0),
@@ -58,53 +72,60 @@ class Renderer:
         )
 
         self.model = None
-        self.tex = None
-        self._tex_n = 0
+        self.tex = None       # displacement: (height, Dx, Dz)
+        self.tex_n = None     # slopes: (dH/dx, dH/dz)
+        self._tex_n_res = 0
         self.rebuild(grid_n)
 
     # ----------------------------------------------------------- gpu objects
-    def rebuild(self, grid_n: int) -> None:
-        """(Re)build the mesh + displacement texture for a new grid size."""
-        if self.model is not None:
-            rl.unload_model(self.model)
-        if self.tex is not None:
-            rl.unload_texture(self.tex)
-
-        subdiv = min(grid_n, MAX_MESH_SUBDIV)
-        mesh = rl.gen_mesh_plane(self.rp.world_size, self.rp.world_size,
-                                 subdiv, subdiv)
-        self.model = rl.load_model_from_mesh(mesh)
-        self.model.materials[0].shader = self.shader
-
-        # Float RGBA displacement texture, created from a zero image then
-        # updated every frame via update_texture.
-        self._tex_n = grid_n
-        self._zero = np.zeros((grid_n, grid_n, 4), dtype=np.float32)
+    def _make_float_texture(self, grid_n: int):
+        """Create a zero-initialised RGBA32F texture, bilinear + REPEAT wrap."""
+        zero = np.zeros((grid_n, grid_n, 4), dtype=np.float32)
         img = rl.Image()
-        img.data = ffi.cast("void *", self._zero.ctypes.data)
+        img.data = ffi.cast("void *", zero.ctypes.data)
         img.width = grid_n
         img.height = grid_n
         img.mipmaps = 1
         img.format = rl.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
-        self.tex = rl.load_texture_from_image(img)
-        rl.set_texture_filter(self.tex, rl.TEXTURE_FILTER_BILINEAR)
-        # REPEAT so neighbour-texel normal sampling wraps seamlessly across
-        # tiled patches (the height field is periodic).
-        rl.set_texture_wrap(self.tex, rl.TEXTURE_WRAP_REPEAT)
-        # Sample normals at the *mesh* resolution (not the finer texture res) so
-        # the sun glint doesn't moire/alias against the coarser displaced
-        # geometry. dWorld in the shader uses the same spacing for consistency.
-        self._float("uGridN", float(subdiv))
-        self._float("uWorldSize", self.rp.world_size)
-        # Bind it to the material's albedo slot -> shader sampler "texture0".
-        self.model.materials[0].maps[rl.MATERIAL_MAP_ALBEDO].texture = self.tex
+        tex = rl.load_texture_from_image(img)
+        rl.set_texture_filter(tex, rl.TEXTURE_FILTER_BILINEAR)
+        rl.set_texture_wrap(tex, rl.TEXTURE_WRAP_REPEAT)  # seamless tiling
+        return tex
 
-    def upload(self, packed: np.ndarray) -> None:
-        """Push the packed (N,N,4) float32 fields to the GL texture."""
-        if packed.shape[0] != self._tex_n:
+    def rebuild(self, grid_n: int) -> None:
+        """(Re)build the mesh + displacement/slope textures for a new grid."""
+        if self.model is not None:
+            rl.unload_model(self.model)
+        if self.tex is not None:
+            rl.unload_texture(self.tex)
+        if self.tex_n is not None:
+            rl.unload_texture(self.tex_n)
+
+        # One big continuous plane spanning TILES x TILES patches. UVs are
+        # scaled by TILES in the vertex shader so the texture repeats with no
+        # internal mesh edges (hence no seams/gaps).
+        span = self.rp.world_size * TILES
+        subdiv = min(grid_n, SUBDIV_PER_PATCH) * TILES
+        mesh = rl.gen_mesh_plane(span, span, subdiv, subdiv)
+        self.model = rl.load_model_from_mesh(mesh)
+        self.model.materials[0].shader = self.shader
+        self._float("uUVRepeat", float(TILES))
+
+        self._tex_n_res = grid_n
+        self.tex = self._make_float_texture(grid_n)     # displacement
+        self.tex_n = self._make_float_texture(grid_n)   # slopes
+        # texture0 = albedo slot (displacement), texture2 = normal slot (slopes).
+        self.model.materials[0].maps[rl.MATERIAL_MAP_ALBEDO].texture = self.tex
+        self.model.materials[0].maps[rl.MATERIAL_MAP_NORMAL].texture = self.tex_n
+
+    def upload(self, packed: np.ndarray, packed_n: np.ndarray) -> None:
+        """Push the displacement and slope fields to their GL textures."""
+        if packed.shape[0] != self._tex_n_res:
             return
         c = np.ascontiguousarray(packed, dtype=np.float32)
+        cn = np.ascontiguousarray(packed_n, dtype=np.float32)
         rl.update_texture(self.tex, ffi.cast("void *", c.ctypes.data))
+        rl.update_texture(self.tex_n, ffi.cast("void *", cn.ctypes.data))
 
     # --------------------------------------------------------------- uniforms
     def _vec3(self, loc_name: str, x, y, z) -> None:
@@ -126,11 +147,13 @@ class Renderer:
         self._vec3("uSunCol", *rp.sun_color)
         self._float("uVScale", rp.height_scale)
         self._float("uHScale", rp.height_scale * 0.22)
+        self._float("uSlopeScale", rp.height_scale * 1.2)
 
     def set_height_scale(self, v: float) -> None:
         self.rp.height_scale = v
         self._float("uVScale", v)
         self._float("uHScale", v * 0.22)
+        self._float("uSlopeScale", v * 1.2)
 
     # ----------------------------------------------------------------- camera
     def update_camera(self, allow_mouse: bool) -> None:
@@ -140,8 +163,8 @@ class Renderer:
                 self.yaw -= md.x * 0.005
                 self.pitch = max(0.05, min(1.5, self.pitch + md.y * 0.005))
             self.distance *= (1.0 - rl.get_mouse_wheel_move() * 0.08)
-            self.distance = max(self.rp.world_size * 0.25,
-                                min(self.rp.world_size * 3.0, self.distance))
+            self.distance = max(self.span * 0.2,
+                                min(self.span * 1.8, self.distance))
         d, p, y = self.distance, self.pitch, self.yaw
         self.camera.position = rl.Vector3(
             d * math.cos(p) * math.cos(y),
@@ -156,14 +179,7 @@ class Renderer:
         rl.begin_drawing()
         rl.clear_background(rl.Color(150, 178, 235, 255))
         rl.begin_mode_3d(self.camera)
-        # The height field is periodic, so tiling the patch is seamless and
-        # makes it read as an open ocean rather than a lone floating square.
-        s = self.rp.world_size
-        r = self.tile_radius
-        for iz in range(-r, r + 1):
-            for ix in range(-r, r + 1):
-                rl.draw_model(self.model, rl.Vector3(ix * s, 0, iz * s),
-                              1.0, rl.WHITE)
+        rl.draw_model(self.model, rl.Vector3(0, 0, 0), 1.0, rl.WHITE)
         rl.end_mode_3d()
 
     def end_frame(self) -> None:
@@ -177,5 +193,7 @@ class Renderer:
             rl.unload_model(self.model)
         if self.tex is not None:
             rl.unload_texture(self.tex)
+        if self.tex_n is not None:
+            rl.unload_texture(self.tex_n)
         rl.unload_shader(self.shader)
         rl.close_window()

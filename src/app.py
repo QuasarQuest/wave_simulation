@@ -16,7 +16,7 @@ from src.backend import make_backend, cupy_available
 from src.ocean import Ocean
 from src.renderer import Renderer
 
-PANEL_W = 300
+PANEL_W = 300  # base (logical) panel width; scaled by the renderer's ui_scale
 
 
 class App:
@@ -30,6 +30,10 @@ class App:
 
         self.ocean = Ocean(self.backend, self.params)
         self.renderer = Renderer(cfg.render, self.params.N)
+        # UI scale + panel width are recomputed each frame from the live
+        # framebuffer size in _draw_gui; these are just initial values.
+        self.ui = 2.0
+        self.panel_w = int(PANEL_W * self.ui)
 
         self.sim_time = 0.0
         self.sim_ms = {"numpy": None, "cupy": None}  # EMA of step() time
@@ -71,24 +75,38 @@ class App:
         if self.sim_ms["numpy"] and self.sim_ms["cupy"]:
             self.last_speedup = self.sim_ms["numpy"] / self.sim_ms["cupy"]
 
-        packed = self.ocean.pack_texture()   # GPU->CPU readback happens here
-        self.renderer.upload(packed)
+        packed = self.ocean.pack_texture()    # GPU->CPU readback happens here
+        packed_n = self.ocean.pack_normal()
+        self.renderer.upload(packed, packed_n)
 
     # ------------------------------------------------------------------- gui
     def _draw_gui(self) -> None:
-        rl.gui_panel(rl.Rectangle(0, 0, PANEL_W, self.cfg.render.height),
+        # Scale the whole panel to the live framebuffer height so it stays
+        # readable/clickable at any window or HiDPI size. render==screen here,
+        # so widgets and the mouse share one coordinate space.
+        self.ui = max(1.5, min(5.0, rl.get_render_height() / 900.0))
+        self.panel_w = int(PANEL_W * self.ui)
+        rl.gui_set_style(rl.DEFAULT, rl.TEXT_SIZE, int(17 * self.ui))
+        s = self.ui
+        pw = self.panel_w
+        rl.gui_panel(rl.Rectangle(0, 0, pw, rl.get_render_height()),
                      b"FFT Ocean Controls")
-        x, w = 12, PANEL_W - 24
-        y = 36
+        x = 12 * s
+        w = pw - 24 * s
+        y = 44 * s
+        lh = 22 * s          # label height
+        sh = 26 * s          # slider height
+        row = 30 * s         # widget row height
+        gap = 10 * s
 
         def slider(label, value, lo, hi, fmt="%.1f"):
             nonlocal y
-            rl.gui_label(rl.Rectangle(x, y, w, 16),
+            rl.gui_label(rl.Rectangle(x, y, w, lh),
                          f"{label}: {fmt % value}".encode())
-            y += 18
+            y += lh
             ptr = ffi.new("float *", float(value))
-            rl.gui_slider_bar(rl.Rectangle(x, y, w, 16), b"", b"", ptr, lo, hi)
-            y += 26
+            rl.gui_slider_bar(rl.Rectangle(x, y, w, sh), b"", b"", ptr, lo, hi)
+            y += sh + gap
             return ptr[0]
 
         p = self.params
@@ -108,38 +126,38 @@ class App:
             self.ocean.update_params(p)
 
         # Grid size selector.
-        y += 6
-        rl.gui_label(rl.Rectangle(x, y, w, 16), b"Grid size (NxN)")
-        y += 18
+        y += gap
+        rl.gui_label(rl.Rectangle(x, y, w, lh), b"Grid size (NxN)")
+        y += lh
         gi = ffi.new("int *", self._grid_idx)
-        rl.gui_toggle_group(rl.Rectangle(x, y, (w - 16) / 5, 22),
+        rl.gui_toggle_group(rl.Rectangle(x, y, (w - 16 * s) / 5, row * 1.1),
                             b";".join(str(g).encode() for g in GRID_SIZES), gi)
         if gi[0] != self._grid_idx:
             self._grid_idx = gi[0]
             self._pending_rebuild = True
-        y += 34
+        y += row * 1.1 + gap
 
         # Backend toggle.
-        rl.gui_label(rl.Rectangle(x, y, w, 16), b"Backend")
-        y += 18
+        rl.gui_label(rl.Rectangle(x, y, w, lh), b"Backend")
+        y += lh
         bi = ffi.new("int *", self._backend_idx)
-        rl.gui_toggle_group(rl.Rectangle(x, y, (w - 4) / 2, 24),
+        rl.gui_toggle_group(rl.Rectangle(x, y, (w - 4 * s) / 2, row * 1.2),
                             b"NumPy (CPU);CuPy (GPU)", bi)
         if bi[0] != self._backend_idx:
             if bi[0] == 1 and not self.gpu_ok:
                 pass  # GPU unavailable; ignore
             else:
                 self._pending_backend = "numpy" if bi[0] == 0 else "cupy"
-        y += 34
+        y += row * 1.2 + gap
         if not self.gpu_ok:
-            rl.gui_label(rl.Rectangle(x, y, w, 16), b"(GPU unavailable)")
-            y += 20
+            rl.gui_label(rl.Rectangle(x, y, w, lh), b"(GPU unavailable)")
+            y += lh
 
         # --- readouts ---
-        y += 8
-        self._readouts(x, w, y)
+        y += gap
+        self._readouts(x, w, y, lh)
 
-    def _readouts(self, x, w, y) -> None:
+    def _readouts(self, x, w, y, lh) -> None:
         fps = rl.get_fps()
         sm = self.sim_ms[self.backend.kind]
         lines = [
@@ -151,9 +169,9 @@ class App:
             ("GPU speedup", f"{self.last_speedup:.1f}x" if self.last_speedup else "run both"),
         ]
         for label, val in lines:
-            rl.gui_label(rl.Rectangle(x, y, w, 18), f"{label}: {val}".encode())
-            y += 20
-        rl.gui_label(rl.Rectangle(x, y + 6, w, 18),
+            rl.gui_label(rl.Rectangle(x, y, w, lh), f"{label}: {val}".encode())
+            y += lh
+        rl.gui_label(rl.Rectangle(x, y + 6 * self.ui, w, lh),
                      b"LMB drag: orbit   wheel: zoom")
 
     # ------------------------------------------------------------------- loop
@@ -173,7 +191,7 @@ class App:
 
             self._simulate()
 
-            mouse_over_panel = rl.get_mouse_x() < PANEL_W
+            mouse_over_panel = rl.get_mouse_x() < self.panel_w
             self.renderer.update_camera(allow_mouse=not mouse_over_panel)
 
             self.renderer.begin_world()
