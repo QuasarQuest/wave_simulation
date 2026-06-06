@@ -190,15 +190,25 @@ class Renderer:
                 md = rl.get_mouse_delta()
                 self.yaw -= md.x * 0.005
                 self.pitch = max(0.05, min(1.5, self.pitch + md.y * 0.005))
+            # RMB drag pans the look-at point across the water, in the camera's
+            # horizontal frame; speed scales with zoom so it feels consistent.
+            if rl.is_mouse_button_down(rl.MOUSE_BUTTON_RIGHT):
+                md = rl.get_mouse_delta()
+                speed = self.distance * 0.0015
+                cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+                self.target.x -= (sy * md.x + cy * md.y) * speed
+                self.target.z -= (-cy * md.x + sy * md.y) * speed
             self.distance *= (1.0 - rl.get_mouse_wheel_move() * 0.08)
             self.distance = max(self.span * 0.2,
                                 min(self.span * 1.8, self.distance))
         d, p, y = self.distance, self.pitch, self.yaw
+        # Orbit + zoom around the (movable) look-at point.
         self.camera.position = rl.Vector3(
-            d * math.cos(p) * math.cos(y),
-            d * math.sin(p),
-            d * math.cos(p) * math.sin(y),
+            self.target.x + d * math.cos(p) * math.cos(y),
+            self.target.y + d * math.sin(p),
+            self.target.z + d * math.cos(p) * math.sin(y),
         )
+        self.camera.target = self.target
 
     # ------------------------------------------------------------------ frame
     def begin_world(self) -> None:
