@@ -26,6 +26,11 @@ SHADER_DIR = os.path.join(os.path.dirname(__file__), "..", "shaders")
 # how many patch copies span the visible ocean (TILES x TILES).
 SUBDIV_PER_PATCH = 150
 TILES = 3
+# raylib's gen_mesh_plane uses 16-bit indices, so a plane with more than 65536
+# vertices ((subdiv+1)^2) overflows and only part of it renders -- that's the
+# "cut off" ocean. 255 -> exactly 256*256 = 65536 verts, the most one plane can
+# hold, so the whole finite patch draws.
+MAX_SUBDIV = 255
 
 
 class Renderer:
@@ -133,7 +138,7 @@ class Renderer:
         # scaled by TILES in the vertex shader so the texture repeats with no
         # internal mesh edges (hence no seams/gaps).
         span = self.rp.world_size * TILES
-        subdiv = min(grid_n, SUBDIV_PER_PATCH) * TILES
+        subdiv = min(min(grid_n, SUBDIV_PER_PATCH) * TILES, MAX_SUBDIV)
         mesh = rl.gen_mesh_plane(span, span, subdiv, subdiv)
         self.model = rl.load_model_from_mesh(mesh)
         self.model.materials[0].shader = self.shader
