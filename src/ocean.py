@@ -25,6 +25,10 @@ class Ocean:
         self.xp = backend.xp
         self.params = params.copy()
         self.seed = seed
+        # Real-space fields produced by step(); populated each frame. Declared
+        # here so the object's full shape is visible and pack_*() never hits a
+        # missing attribute before the first step.
+        self.height = self.dx = self.dz = self.sx = self.sz = None
         self._build()
 
     # ------------------------------------------------------------------ setup

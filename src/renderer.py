@@ -111,7 +111,8 @@ class Renderer:
         self.rebuild(grid_n)
 
     # ----------------------------------------------------------- gpu objects
-    def _make_float_texture(self, grid_n: int):
+    @staticmethod
+    def _make_float_texture(grid_n: int):
         """Create a zero-initialised RGBA32F texture, bilinear + REPEAT wrap."""
         zero = np.zeros((grid_n, grid_n, 4), dtype=np.float32)
         img = rl.Image()
@@ -225,10 +226,12 @@ class Renderer:
         rl.draw_model(self.model, rl.Vector3(0, 0, 0), 1.0, rl.WHITE)
         rl.end_mode_3d()
 
-    def end_frame(self) -> None:
+    @staticmethod
+    def end_frame() -> None:
         rl.end_drawing()
 
-    def should_close(self) -> bool:
+    @staticmethod
+    def should_close() -> bool:
         return rl.window_should_close()
 
     def close(self) -> None:
