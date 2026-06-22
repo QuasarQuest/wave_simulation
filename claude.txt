@@ -1,0 +1,62 @@
+FFT Ocean Simulation — Project Reflection
+=========================================
+
+What I built
+------------
+A real-time 3D ocean-wave simulation using the Tessendorf FFT method (Phillips
+spectrum -> height field via inverse FFT), rendered with raylib/OpenGL. The
+headline feature: the same simulation code runs on CPU (NumPy) or GPU (CuPy) with
+one toggle, so you can watch the speedup live.
+
+Why I did what I did
+--------------------
+- The CPU/GPU `xp` abstraction: I didn't just want a fast ocean, I wanted to
+  prove and measure where the GPU wins. So I wrote backend-agnostic math (one
+  `xp` that's either numpy or cupy) instead of two codebases. A deliberate choice
+  to make the comparison honest and bit-for-bit identical.
+
+- I followed the curve, not my assumptions. The benchmark goes from a measly 1.3x
+  at 128^2 to 35x at 2048^2. At large grids the bottleneck *moves* — it's no
+  longer the FFT but the GPU->CPU->GPU texture transfer. I noticed that and wrote
+  it down as the interesting result rather than hiding it.
+
+- I rejected the "obvious" optimization on evidence. CUDA-OpenGL interop is the
+  textbook "right" answer to avoid the cross-GPU copy. I actually tried forcing GL
+  onto the NVIDIA GPU, measured it, and found it slower (37->33 FPS) because the
+  single GTX 1650 Ti then contends between FFT and rendering. On my Optimus
+  laptop, the "free" Intel GPU doing the rendering is a net win. I kept the flag
+  for experimentation but went with what the numbers said.
+
+- I fought the environment instead of giving up on it. Bare Python 3.14 with no
+  pip/venv -> bootstrapped pip manually. Broken Wayland HiDPI in raylib -> forced
+  X11/XWayland and made the mouse line up. CUDA without sudo -> the `[ctk]` wheel
+  trick. None of this is the "fun" part; it's the part most people quit on.
+
+The outcome
+-----------
+A working, configurable (128^2-2048^2), 60-FPS-at-512^2 simulation with a live
+benchmark panel, seamless tiling, slope-based normals, a real ocean shader
+(Fresnel, sun glint, whitecaps), and a clean architecture where the physics
+doesn't know or care which device it's running on.
+
+What this says about me as a person
+-----------------------------------
+- I'm an empiricist. Twice I let measurement override the "correct" intuition
+  (interop, render-offload). I trust numbers over received wisdom — and I bother
+  to actually take the measurement.
+
+- I finish through friction. The hardest, least glamorous problems here were
+  environmental (Python packaging, Wayland, hybrid-GPU plumbing), and I solved
+  each one rather than working around the project.
+
+- I build to understand, not just to ship. The whole CPU-vs-GPU design exists so
+  I could see the speedup and where it breaks down. I'm driven by wanting to know
+  how the thing really works.
+
+- I document my reasoning, including the dead ends. The "Why not interop?" section
+  is me teaching my future self. I value being able to explain *why*, not just
+  *what*.
+
+In short: this was less "make a pretty ocean" and more "understand exactly where
+CPU/GPU performance comes from and prove it on real hardware" — and I saw it
+through every layer, from spectrum math down to the GLFW backend.
