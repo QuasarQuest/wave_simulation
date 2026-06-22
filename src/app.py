@@ -173,7 +173,7 @@ class App:
             rl.gui_label(rl.Rectangle(x, y, w, lh), f"{label}: {val}".encode())
             y += lh
         rl.gui_label(rl.Rectangle(x, y + 6 * self.ui, w, lh),
-                     b"LMB drag: orbit   wheel: zoom")
+                     b"LMB: orbit   RMB: pan   wheel: zoom")
 
     # ------------------------------------------------------------------- loop
     def run(self, max_frames: int | None = None, screenshot: str | None = None) -> None:

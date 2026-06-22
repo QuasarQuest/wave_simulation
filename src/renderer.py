@@ -26,6 +26,11 @@ SHADER_DIR = os.path.join(os.path.dirname(__file__), "..", "shaders")
 # how many patch copies span the visible ocean (TILES x TILES).
 SUBDIV_PER_PATCH = 150
 TILES = 3
+# raylib's gen_mesh_plane uses 16-bit indices, so a plane with more than 65536
+# vertices ((subdiv+1)^2) overflows and only part of it renders -- that's the
+# "cut off" ocean. 255 -> exactly 256*256 = 65536 verts, the most one plane can
+# hold, so the whole finite patch draws.
+MAX_SUBDIV = 255
 
 
 class Renderer:
@@ -106,7 +111,8 @@ class Renderer:
         self.rebuild(grid_n)
 
     # ----------------------------------------------------------- gpu objects
-    def _make_float_texture(self, grid_n: int):
+    @staticmethod
+    def _make_float_texture(grid_n: int):
         """Create a zero-initialised RGBA32F texture, bilinear + REPEAT wrap."""
         zero = np.zeros((grid_n, grid_n, 4), dtype=np.float32)
         img = rl.Image()
@@ -133,7 +139,7 @@ class Renderer:
         # scaled by TILES in the vertex shader so the texture repeats with no
         # internal mesh edges (hence no seams/gaps).
         span = self.rp.world_size * TILES
-        subdiv = min(grid_n, SUBDIV_PER_PATCH) * TILES
+        subdiv = min(min(grid_n, SUBDIV_PER_PATCH) * TILES, MAX_SUBDIV)
         mesh = rl.gen_mesh_plane(span, span, subdiv, subdiv)
         self.model = rl.load_model_from_mesh(mesh)
         self.model.materials[0].shader = self.shader
@@ -190,15 +196,25 @@ class Renderer:
                 md = rl.get_mouse_delta()
                 self.yaw -= md.x * 0.005
                 self.pitch = max(0.05, min(1.5, self.pitch + md.y * 0.005))
+            # RMB drag pans the look-at point across the water, in the camera's
+            # horizontal frame; speed scales with zoom so it feels consistent.
+            if rl.is_mouse_button_down(rl.MOUSE_BUTTON_RIGHT):
+                md = rl.get_mouse_delta()
+                speed = self.distance * 0.0015
+                cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+                self.target.x -= (sy * md.x + cy * md.y) * speed
+                self.target.z -= (-cy * md.x + sy * md.y) * speed
             self.distance *= (1.0 - rl.get_mouse_wheel_move() * 0.08)
             self.distance = max(self.span * 0.2,
                                 min(self.span * 1.8, self.distance))
         d, p, y = self.distance, self.pitch, self.yaw
+        # Orbit + zoom around the (movable) look-at point.
         self.camera.position = rl.Vector3(
-            d * math.cos(p) * math.cos(y),
-            d * math.sin(p),
-            d * math.cos(p) * math.sin(y),
+            self.target.x + d * math.cos(p) * math.cos(y),
+            self.target.y + d * math.sin(p),
+            self.target.z + d * math.cos(p) * math.sin(y),
         )
+        self.camera.target = self.target
 
     # ------------------------------------------------------------------ frame
     def begin_world(self) -> None:
@@ -210,10 +226,12 @@ class Renderer:
         rl.draw_model(self.model, rl.Vector3(0, 0, 0), 1.0, rl.WHITE)
         rl.end_mode_3d()
 
-    def end_frame(self) -> None:
+    @staticmethod
+    def end_frame() -> None:
         rl.end_drawing()
 
-    def should_close(self) -> bool:
+    @staticmethod
+    def should_close() -> bool:
         return rl.window_should_close()
 
     def close(self) -> None:
